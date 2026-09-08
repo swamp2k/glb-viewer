@@ -1,0 +1,63 @@
+{
+  "name": "glb-viewer",
+  "version": "1.0.0",
+  "description": "GLB / GLTF 3D model viewer",
+  "author": "Martin Jeppesen",
+  "license": "MIT",
+  "main": "electron.cjs",
+  "scripts": {
+    "start":       "electron .",
+    "build":       "electron-builder",
+    "build:win":   "electron-builder --win --x64",
+    "build:linux": "electron-builder --linux",
+    "build:both":  "electron-builder --win --linux"
+  },
+  "devDependencies": {
+    "electron":         "^29.0.0",
+    "electron-builder": "^24.9.0"
+  },
+  "build": {
+    "appId":       "cc.jeppesen.glb-viewer",
+    "productName": "GLB Viewer",
+
+    "files": [
+      "electron.cjs",
+      "preload.cjs",
+      "index.html"
+    ],
+
+    "fileAssociations": [
+      {
+        "ext":         "glb",
+        "name":        "GLB 3D Model",
+        "description": "Binary GL Transmission Format",
+        "role":        "Viewer"
+      },
+      {
+        "ext":         "gltf",
+        "name":        "GLTF 3D Model",
+        "description": "GL Transmission Format",
+        "role":        "Viewer"
+      }
+    ],
+
+    "win": {
+      "target": [
+        { "target": "nsis",     "arch": ["x64"] },
+        { "target": "portable", "arch": ["x64"] }
+      ]
+    },
+
+    "nsis": {
+      "oneClick":                       false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut":          true,
+      "createStartMenuShortcut":        true
+    },
+
+    "linux": {
+      "target":   ["AppImage", "deb"],
+      "category": "Graphics"
+    }
+  }
+}
