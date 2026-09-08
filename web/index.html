@@ -1,0 +1,681 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>GLB Viewer</title>
+  <style>
+    :root {
+      --bg:      #0f1114;
+      --surface: #1c1f26;
+      --surface2:#242830;
+      --border:  #2c303a;
+      --border2: #383d4a;
+      --text:    #d8dae0;
+      --muted:   #636880;
+      --accent:  #5f8fff;
+      --accent2: #7ba7ff;
+      --ok:      #4ecb71;
+      --err:     #e05c5c;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body {
+      width: 100%; height: 100%; overflow: hidden;
+      background: var(--bg); color: var(--text);
+      font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+      font-size: 12px;
+      user-select: none;
+    }
+
+    canvas { position: fixed; inset: 0; display: block; width: 100% !important; height: 100% !important; }
+
+    /* ── Drop overlay ──────────────────────────── */
+    #drop-overlay {
+      position: fixed; inset: 0; z-index: 80;
+      display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+      background: var(--bg);
+      transition: background 0.15s;
+    }
+    #drop-overlay.hidden  { display: none; }
+    #drop-overlay.dragover { background: #0d1220; }
+
+    .drop-zone {
+      border: 2px dashed var(--border2); border-radius: 16px;
+      padding: 56px 80px;
+      display: flex; flex-direction: column; align-items: center; gap: 14px;
+      transition: border-color 0.15s, background 0.15s;
+    }
+    #drop-overlay.dragover .drop-zone {
+      border-color: var(--accent);
+      background: rgba(95,143,255,0.06);
+    }
+
+    .drop-glyph  { font-size: 52px; opacity: 0.45; line-height: 1; }
+    .drop-title  { font-size: 20px; font-weight: 600; letter-spacing: -0.3px; }
+    .drop-sub    { color: var(--muted); font-size: 13px; }
+    .drop-badges { display: flex; gap: 8px; margin-top: 2px; }
+    .badge {
+      background: var(--surface2); border: 1px solid var(--border);
+      color: var(--muted); padding: 3px 8px; border-radius: 4px;
+      font-size: 11px; font-family: monospace; letter-spacing: 0.5px;
+    }
+
+    /* ── Buttons ───────────────────────────────── */
+    .btn {
+      display: inline-flex; align-items: center; gap: 5px;
+      padding: 6px 12px; border-radius: 6px;
+      border: 1px solid var(--border); background: var(--surface2);
+      color: var(--text); cursor: pointer; font-size: 12px;
+      transition: background 0.1s, border-color 0.1s, color 0.1s;
+      white-space: nowrap;
+    }
+    .btn:hover  { background: var(--border); border-color: var(--border2); }
+    .btn.active { background: rgba(95,143,255,0.12); border-color: var(--accent); color: var(--accent2); }
+    .btn-primary { background: var(--accent); color: #fff; border-color: var(--accent); font-weight: 500; padding: 8px 20px; }
+    .btn-primary:hover { background: var(--accent2); border-color: var(--accent2); }
+
+    /* ── UI overlay ────────────────────────────── */
+    #ui { position: fixed; inset: 0; pointer-events: none; z-index: 20; }
+
+    /* Top-left info panel */
+    #panel-info {
+      position: absolute; top: 12px; left: 12px;
+      background: rgba(15,17,20,0.84); backdrop-filter: blur(12px);
+      border: 1px solid var(--border); border-radius: 8px;
+      padding: 10px 14px; min-width: 190px;
+      display: none; pointer-events: none;
+    }
+    .panel-filename {
+      font-size: 13px; font-weight: 600;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+      max-width: 240px; margin-bottom: 8px; padding-bottom: 8px;
+      border-bottom: 1px solid var(--border);
+    }
+    .stat-grid { display: grid; grid-template-columns: auto auto; column-gap: 16px; row-gap: 4px; }
+    .stat-label { color: var(--muted); }
+    .stat-val   { text-align: right; font-family: 'Cascadia Code','Consolas',monospace; }
+
+    /* Top-right toolbar */
+    #panel-controls {
+      position: absolute; top: 12px; right: 12px;
+      display: flex; flex-direction: column; align-items: flex-end; gap: 6px;
+      pointer-events: all;
+    }
+    .btn-row { display: flex; gap: 5px; }
+
+    /* Bottom animation bar */
+    #panel-anim {
+      position: absolute; bottom: 12px; left: 50%; transform: translateX(-50%);
+      background: rgba(15,17,20,0.88); backdrop-filter: blur(12px);
+      border: 1px solid var(--border); border-radius: 8px;
+      padding: 8px 12px; display: flex; align-items: center; gap: 8px;
+      pointer-events: all; min-width: 380px; max-width: 640px;
+    }
+    #panel-anim.hidden { display: none; }
+    #anim-select {
+      background: var(--surface2); border: 1px solid var(--border);
+      color: var(--text); padding: 5px 8px; border-radius: 5px;
+      font-size: 12px; cursor: pointer; max-width: 200px;
+    }
+    #anim-track {
+      flex: 1; height: 4px; background: var(--surface2);
+      border-radius: 2px; cursor: pointer; min-width: 60px;
+    }
+    #anim-fill  { height: 100%; background: var(--accent); border-radius: 2px; width: 0%; pointer-events: none; }
+    .anim-time  { font-family: 'Cascadia Code','Consolas',monospace; color: var(--muted); font-size: 11px; white-space: nowrap; }
+
+    /* Bottom-right hints */
+    #panel-hints {
+      position: absolute; bottom: 12px; right: 12px;
+      color: var(--muted); font-size: 11px; line-height: 2;
+      text-align: right; pointer-events: none; display: none;
+    }
+    #panel-hints kbd {
+      background: var(--surface2); border: 1px solid var(--border);
+      border-radius: 3px; padding: 1px 5px;
+      font-family: monospace; font-size: 10px; color: var(--text);
+    }
+
+    /* Loading overlay */
+    #loading {
+      position: fixed; inset: 0; z-index: 70;
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      background: rgba(15,17,20,0.9); backdrop-filter: blur(6px);
+    }
+    #loading.hidden { display: none; }
+    .spinner {
+      width: 36px; height: 36px; border: 2px solid var(--border);
+      border-top-color: var(--accent); border-radius: 50%;
+      animation: spin 0.75s linear infinite; margin-bottom: 12px;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .loading-sub { color: var(--muted); margin-top: 4px; font-variant-numeric: tabular-nums; }
+    #load-bar-wrap { width: 200px; height: 3px; background: var(--border); border-radius: 2px; margin-top: 10px; }
+    #load-bar { height: 100%; width: 0%; background: var(--accent); border-radius: 2px; transition: width 0.1s; }
+
+    /* OS drag-over highlight */
+    #drag-hint {
+      position: fixed; inset: 0; z-index: 60;
+      border: 3px solid var(--accent); pointer-events: none;
+      background: rgba(95,143,255,0.05); display: none;
+    }
+    #drag-hint.visible { display: block; }
+    .drag-hint-label {
+      position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%);
+      background: rgba(15,17,20,0.92); border: 1px solid var(--accent);
+      border-radius: 8px; padding: 14px 28px;
+      font-size: 15px; font-weight: 600; color: var(--accent2);
+    }
+
+    /* Toast */
+    #toast {
+      position: fixed; bottom: 56px; left: 50%; transform: translateX(-50%);
+      background: rgba(28,31,38,0.96); border: 1px solid var(--border);
+      border-radius: 6px; padding: 7px 16px; font-size: 12px;
+      z-index: 200; transition: opacity 0.3s; white-space: nowrap; pointer-events: none;
+    }
+    #toast.hidden { opacity: 0; }
+    #toast.ok  { border-color: var(--ok);  color: var(--ok);  }
+    #toast.err { border-color: var(--err); color: var(--err); }
+
+    input[type="file"] { display: none; }
+  </style>
+</head>
+<body>
+
+<canvas id="canvas"></canvas>
+
+<div id="drop-overlay">
+  <div class="drop-zone">
+    <div class="drop-glyph">⬡</div>
+    <div class="drop-title">GLB Viewer</div>
+    <div class="drop-sub">Drop a file here, or click to browse</div>
+    <div class="drop-badges"><span class="badge">.glb</span><span class="badge">.gltf</span></div>
+    <button class="btn btn-primary" id="btn-open-main" style="margin-top:10px">Open file…</button>
+  </div>
+</div>
+
+<div id="drag-hint"><div class="drag-hint-label">Drop to open</div></div>
+
+<div id="loading" class="hidden">
+  <div class="spinner"></div>
+  <div style="color:var(--text);font-size:13px;font-weight:500">Loading model</div>
+  <div class="loading-sub" id="load-label">–</div>
+  <div id="load-bar-wrap"><div id="load-bar"></div></div>
+</div>
+
+<div id="ui">
+  <div id="panel-info">
+    <div class="panel-filename" id="info-filename">–</div>
+    <div class="stat-grid" id="info-stats"></div>
+  </div>
+
+  <div id="panel-controls">
+    <div class="btn-row">
+      <button class="btn" id="btn-open" title="Open file  [O]">📂 Open</button>
+      <button class="btn" id="btn-fit"  title="Fit camera  [F]">⌖ Fit</button>
+    </div>
+    <div class="btn-row">
+      <button class="btn" id="btn-wire"  title="Wireframe  [W]">◻ Wire</button>
+      <button class="btn" id="btn-grid"  title="Grid  [G]">⊞ Grid</button>
+      <button class="btn" id="btn-bg"    title="Background  [B]">◑ BG</button>
+      <button class="btn" id="btn-light" title="Flat/Lit  [L]">☀ Lit</button>
+    </div>
+  </div>
+
+  <div id="panel-anim" class="hidden">
+    <button class="btn" id="btn-play" style="padding:6px 9px" title="Play/Pause  [Space]">▶</button>
+    <select id="anim-select"></select>
+    <div id="anim-track"><div id="anim-fill"></div></div>
+    <div class="anim-time" id="anim-time">0:00 / 0:00</div>
+  </div>
+
+  <div id="panel-hints">
+    <kbd>Left drag</kbd> Orbit &nbsp;
+    <kbd>Right drag</kbd> Pan &nbsp;
+    <kbd>Scroll</kbd> Zoom<br>
+    <kbd>F</kbd> Fit &nbsp;
+    <kbd>W</kbd> Wire &nbsp;
+    <kbd>G</kbd> Grid &nbsp;
+    <kbd>B</kbd> BG &nbsp;
+    <kbd>Space</kbd> Play
+  </div>
+</div>
+
+<div id="toast" class="hidden"></div>
+
+<input type="file" id="file-input" accept=".glb,.gltf">
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { GLTFLoader }    from 'three/addons/loaders/GLTFLoader.js';
+import { DRACOLoader }   from 'three/addons/loaders/DRACOLoader.js';
+
+// ── Renderer ──────────────────────────────────────────────────────────────────
+const canvas = document.getElementById('canvas');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping     = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.2;
+renderer.shadowMap.enabled  = true;
+renderer.shadowMap.type     = THREE.PCFSoftShadowMap;
+
+// ── Scene ─────────────────────────────────────────────────────────────────────
+const scene = new THREE.Scene();
+const BG = [
+  new THREE.Color(0x14171c),
+  new THREE.Color(0x2e2e2e),
+  new THREE.Color(0xc4c4c4),
+  new THREE.Color(0xffffff),
+];
+let bgIdx = 0;
+scene.background = BG[bgIdx];
+
+// ── Camera ────────────────────────────────────────────────────────────────────
+const camera = new THREE.PerspectiveCamera(45, 1, 0.001, 100000);
+camera.position.set(2, 1.5, 3);
+
+const controls = new OrbitControls(camera, canvas);
+controls.enableDamping  = true;
+controls.dampingFactor  = 0.06;
+controls.screenSpacePanning = true;
+controls.minDistance    = 0.001;
+controls.maxDistance    = 50000;
+
+// ── Lights ────────────────────────────────────────────────────────────────────
+const ambient = new THREE.AmbientLight(0xffffff, 0.7);
+scene.add(ambient);
+
+const key = new THREE.DirectionalLight(0xfff4e0, 1.8);
+key.position.set(5, 10, 5);
+key.castShadow = true;
+key.shadow.mapSize.set(2048, 2048);
+key.shadow.normalBias = 0.02;
+scene.add(key);
+
+const fill = new THREE.DirectionalLight(0xb0c8ff, 0.5);
+fill.position.set(-4, 2, -4);
+scene.add(fill);
+
+const rim = new THREE.DirectionalLight(0xffe0b0, 0.25);
+rim.position.set(0, -4, 2);
+scene.add(rim);
+
+// ── Grid ──────────────────────────────────────────────────────────────────────
+const grid = new THREE.GridHelper(20, 40, 0x2a2e38, 0x1e2228);
+scene.add(grid);
+let gridOn = true;
+
+// ── Loaders ───────────────────────────────────────────────────────────────────
+const draco = new DRACOLoader();
+draco.setDecoderPath('https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/libs/draco/gltf/');
+
+const loader = new GLTFLoader();
+loader.setDRACOLoader(draco);
+
+// ── State ─────────────────────────────────────────────────────────────────────
+let model       = null;
+let mixer       = null;
+let animations  = [];
+let action      = null;
+let playing     = false;
+let animLen     = 0;
+let wireframe   = false;
+let litMode     = true;
+const clock     = new THREE.Clock();
+
+// ── File loading ──────────────────────────────────────────────────────────────
+function loadFile(file) {
+  const url = URL.createObjectURL(file);
+  fetchGltf(url, file.name, () => URL.revokeObjectURL(url));
+}
+
+function fetchGltf(url, name, cleanup) {
+  showLoading(true, '–', 0);
+
+  loader.load(
+    url,
+    (gltf) => { cleanup?.(); onLoaded(gltf, name); },
+    (prog) => {
+      if (prog.total > 0) {
+        const pct = Math.round(prog.loaded / prog.total * 100);
+        document.getElementById('load-label').textContent = pct + '%';
+        document.getElementById('load-bar').style.width  = pct + '%';
+      }
+    },
+    (err) => {
+      cleanup?.();
+      showLoading(false);
+      toast('Failed to load: ' + (err.message || err), 'err');
+    }
+  );
+}
+
+// ── Model mounted ─────────────────────────────────────────────────────────────
+function onLoaded(gltf, filename) {
+  if (model)  { scene.remove(model); disposeObj(model); }
+  if (mixer)  { mixer.stopAllAction(); mixer = null; }
+  action = null; animations = [];
+
+  const obj = gltf.scene;
+
+  const box  = new THREE.Box3().setFromObject(obj);
+  const size = box.getSize(new THREE.Vector3());
+  const maxDim = Math.max(size.x, size.y, size.z) || 1;
+  const scale  = 2 / maxDim;
+  const center = box.getCenter(new THREE.Vector3());
+
+  obj.position.sub(center.multiplyScalar(scale));
+  obj.scale.setScalar(scale);
+  scene.add(obj);
+  model = obj;
+
+  const box2   = new THREE.Box3().setFromObject(obj);
+  const bottom = box2.min.y;
+
+  grid.position.y = bottom;
+  grid.scale.set(maxDim * scale * 3, 1, maxDim * scale * 3);
+
+  obj.traverse(o => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
+
+  applyWireframe(wireframe);
+
+  const ext = maxDim * scale * 2;
+  key.shadow.camera.left = key.shadow.camera.bottom = -ext;
+  key.shadow.camera.right = key.shadow.camera.top    =  ext;
+  key.shadow.camera.updateProjectionMatrix();
+
+  fitCamera(box2);
+
+  animations = gltf.animations || [];
+  setupAnims(animations);
+  showStats(filename, stats(obj), animations.length);
+
+  showLoading(false);
+  document.getElementById('drop-overlay').classList.add('hidden');
+  document.getElementById('panel-hints').style.display = '';
+
+  document.title = filename + ' — GLB Viewer';
+  toast('Loaded ' + filename, 'ok');
+}
+
+// ── Camera fit ────────────────────────────────────────────────────────────────
+function fitCamera(box) {
+  const center = box.getCenter(new THREE.Vector3());
+  const size   = box.getSize(new THREE.Vector3());
+  const maxDim = Math.max(size.x, size.y, size.z) || 1;
+  const dist   = (maxDim * 0.5) / Math.tan(camera.fov * Math.PI / 360) * 1.5;
+
+  camera.position.copy(center).addScaledVector(
+    new THREE.Vector3(0.55, 0.38, 1).normalize(), dist
+  );
+  controls.target.copy(center);
+  controls.update();
+
+  camera.near = maxDim / 2000;
+  camera.far  = maxDim * 200;
+  camera.updateProjectionMatrix();
+}
+
+// ── Stats ─────────────────────────────────────────────────────────────────────
+function stats(obj) {
+  let verts = 0, tris = 0, mats = new Set(), meshes = 0, bones = 0;
+  obj.traverse(o => {
+    if (o.isMesh) {
+      meshes++;
+      const g = o.geometry;
+      tris  += g.index ? g.index.count / 3 : (g.attributes.position?.count ?? 0) / 3;
+      verts += g.attributes.position?.count ?? 0;
+      [].concat(o.material).forEach(m => mats.add(m.uuid));
+    }
+    if (o.isBone) bones++;
+  });
+  return { verts, tris: Math.round(tris), mats: mats.size, meshes, bones };
+}
+
+const fmt = n => n >= 1e6 ? (n/1e6).toFixed(2)+'M' : n >= 1e3 ? (n/1e3).toFixed(1)+'K' : String(n);
+
+function showStats(filename, s, animCount) {
+  document.getElementById('info-filename').textContent = filename;
+  const rows = [
+    ['Vertices', fmt(s.verts)],
+    ['Triangles', fmt(s.tris)],
+    ['Meshes', s.meshes],
+    ['Materials', s.mats],
+    ...(s.bones     ? [['Bones', s.bones]]         : []),
+    ...(animCount   ? [['Animations', animCount]]   : []),
+  ];
+  document.getElementById('info-stats').innerHTML =
+    rows.map(([l, v]) => `<span class="stat-label">${l}</span><span class="stat-val">${v}</span>`).join('');
+  document.getElementById('panel-info').style.display = '';
+}
+
+// ── Wireframe ─────────────────────────────────────────────────────────────────
+function applyWireframe(on) {
+  model?.traverse(o => {
+    if (!o.isMesh) return;
+    [].concat(o.material).forEach(m => m.wireframe = on);
+  });
+}
+
+// ── Lighting ──────────────────────────────────────────────────────────────────
+function applyLighting(on) {
+  key.intensity    = on ? 1.8  : 0;
+  fill.intensity   = on ? 0.5  : 0;
+  rim.intensity    = on ? 0.25 : 0;
+  ambient.intensity = on ? 0.7 : 2.2;
+}
+
+// ── Animations ────────────────────────────────────────────────────────────────
+function setupAnims(anims) {
+  const bar = document.getElementById('panel-anim');
+  const sel = document.getElementById('anim-select');
+
+  if (!anims.length) { bar.classList.add('hidden'); return; }
+
+  bar.classList.remove('hidden');
+  sel.innerHTML = anims.map((a, i) =>
+    `<option value="${i}">${a.name || 'Animation ' + (i + 1)}</option>`
+  ).join('');
+
+  mixer = new THREE.AnimationMixer(model);
+  playClip(0);
+}
+
+function playClip(idx) {
+  if (!mixer || !animations[idx]) return;
+  action?.stop();
+  action  = mixer.clipAction(animations[idx]);
+  animLen = animations[idx].duration;
+  action.play();
+  playing = true;
+  document.getElementById('btn-play').textContent = '⏸';
+}
+
+function togglePlay() {
+  if (!action) return;
+  playing = !playing;
+  action.paused = !playing;
+  document.getElementById('btn-play').textContent = playing ? '⏸' : '▶';
+}
+
+function syncAnimBar() {
+  if (!action || animLen === 0) return;
+  const t = action.time;
+  document.getElementById('anim-fill').style.width = (t / animLen * 100).toFixed(2) + '%';
+  const f = s => `${Math.floor(s/60)}:${String(Math.floor(s%60)).padStart(2,'0')}`;
+  document.getElementById('anim-time').textContent = `${f(t)} / ${f(animLen)}`;
+}
+
+// ── Dispose ───────────────────────────────────────────────────────────────────
+function disposeObj(obj) {
+  obj.traverse(o => {
+    o.geometry?.dispose();
+    [].concat(o.material ?? []).forEach(m => {
+      Object.values(m).forEach(v => v?.isTexture && v.dispose());
+      m.dispose();
+    });
+  });
+}
+
+// ── Resize ────────────────────────────────────────────────────────────────────
+function resize() {
+  const w = window.innerWidth, h = window.innerHeight;
+  renderer.setSize(w, h);
+  camera.aspect = w / h;
+  camera.updateProjectionMatrix();
+}
+resize();
+window.addEventListener('resize', resize);
+
+// ── Render loop ───────────────────────────────────────────────────────────────
+(function tick() {
+  requestAnimationFrame(tick);
+  const dt = clock.getDelta();
+  if (mixer && playing) mixer.update(dt);
+  controls.update();
+  syncAnimBar();
+  renderer.render(scene, camera);
+})();
+
+// ── Open button ───────────────────────────────────────────────────────────────
+function triggerOpen() {
+  document.getElementById('file-input').click();
+}
+document.getElementById('btn-open-main').addEventListener('click', triggerOpen);
+document.getElementById('btn-open').addEventListener('click', triggerOpen);
+
+const fileInput = document.getElementById('file-input');
+fileInput.addEventListener('change', e => {
+  if (e.target.files[0]) loadFile(e.target.files[0]);
+  e.target.value = '';
+});
+
+// ── Drag & drop ───────────────────────────────────────────────────────────────
+let dragDepth = 0;
+const dragHint    = document.getElementById('drag-hint');
+const dropOverlay = document.getElementById('drop-overlay');
+
+document.addEventListener('dragenter', e => {
+  e.preventDefault(); dragDepth++;
+  if (model) dragHint.classList.add('visible');
+  else       dropOverlay.classList.add('dragover');
+});
+document.addEventListener('dragover', e => e.preventDefault());
+document.addEventListener('dragleave', () => {
+  if (--dragDepth <= 0) {
+    dragDepth = 0;
+    dragHint.classList.remove('visible');
+    dropOverlay.classList.remove('dragover');
+  }
+});
+document.addEventListener('drop', e => {
+  e.preventDefault();
+  dragDepth = 0;
+  dragHint.classList.remove('visible');
+  dropOverlay.classList.remove('dragover');
+  const f = e.dataTransfer.files[0];
+  if (f) loadFile(f);
+});
+
+// ── Load from ?model= URL param (for shareable links) ──────────────────
+(function loadFromQuery() {
+  const params = new URLSearchParams(location.search);
+  const modelUrl = params.get('model');
+  if (modelUrl) {
+    const name = decodeURIComponent(modelUrl).split('/').pop();
+    fetchGltf(modelUrl, name, null);
+  }
+})();
+
+// ── Toolbar ───────────────────────────────────────────────────────────────────
+document.getElementById('btn-fit').addEventListener('click', () => {
+  if (model) fitCamera(new THREE.Box3().setFromObject(model));
+});
+
+document.getElementById('btn-wire').addEventListener('click', () => {
+  wireframe = !wireframe;
+  document.getElementById('btn-wire').classList.toggle('active', wireframe);
+  applyWireframe(wireframe);
+});
+
+document.getElementById('btn-grid').addEventListener('click', () => {
+  gridOn = !gridOn; grid.visible = gridOn;
+  document.getElementById('btn-grid').classList.toggle('active', !gridOn);
+});
+
+document.getElementById('btn-bg').addEventListener('click', () => {
+  bgIdx = (bgIdx + 1) % BG.length;
+  scene.background = BG[bgIdx];
+});
+
+document.getElementById('btn-light').addEventListener('click', () => {
+  litMode = !litMode;
+  document.getElementById('btn-light').classList.toggle('active', !litMode);
+  applyLighting(litMode);
+});
+
+document.getElementById('btn-play').addEventListener('click', togglePlay);
+
+document.getElementById('anim-select').addEventListener('change', e => playClip(+e.target.value));
+
+document.getElementById('anim-track').addEventListener('click', e => {
+  if (!action || animLen === 0) return;
+  const r = e.currentTarget.getBoundingClientRect();
+  action.time = ((e.clientX - r.left) / r.width) * animLen;
+});
+
+// ── Keyboard ──────────────────────────────────────────────────────────────────
+document.addEventListener('keydown', e => {
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
+  switch (e.key.toLowerCase()) {
+    case 'f': if (model) fitCamera(new THREE.Box3().setFromObject(model)); break;
+    case 'w':
+      wireframe = !wireframe;
+      document.getElementById('btn-wire').classList.toggle('active', wireframe);
+      applyWireframe(wireframe); break;
+    case 'g':
+      gridOn = !gridOn; grid.visible = gridOn;
+      document.getElementById('btn-grid').classList.toggle('active', !gridOn); break;
+    case 'b':
+      bgIdx = (bgIdx + 1) % BG.length; scene.background = BG[bgIdx]; break;
+    case 'l':
+      litMode = !litMode;
+      document.getElementById('btn-light').classList.toggle('active', !litMode);
+      applyLighting(litMode); break;
+    case ' ': e.preventDefault(); togglePlay(); break;
+    case 'o': triggerOpen(); break;
+  }
+});
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+function showLoading(on, label = '–', pct = 0) {
+  document.getElementById('loading').classList.toggle('hidden', !on);
+  document.getElementById('load-label').textContent      = label;
+  document.getElementById('load-bar').style.width        = pct + '%';
+}
+
+let toastTimer;
+function toast(msg, type = '') {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.className   = type;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.add('hidden'), 3500);
+}
+</script>
+</body>
+</html>

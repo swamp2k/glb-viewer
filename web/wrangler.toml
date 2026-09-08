@@ -1,0 +1,2 @@
+name = "glb-viewer"
+pages_build_output_dir = "."
