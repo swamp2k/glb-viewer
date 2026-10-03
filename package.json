@@ -2,15 +2,15 @@
   "name": "glb-viewer",
   "version": "1.0.0",
   "description": "GLB / GLTF 3D model viewer",
-  "author": "Martin Jeppesen",
+  "author": "Martin Jeppesen <67677982+swamp2k@users.noreply.github.com>",
   "license": "MIT",
   "main": "electron.cjs",
   "scripts": {
     "start":       "electron .",
     "build":       "electron-builder",
-    "build:win":   "electron-builder --win --x64",
-    "build:linux": "electron-builder --linux",
-    "build:both":  "electron-builder --win --linux"
+    "build:win":   "electron-builder --win --x64 --publish never",
+    "build:linux": "electron-builder --linux --publish never",
+    "build:both":  "electron-builder --win --linux --publish never"
   },
   "devDependencies": {
     "electron":         "^29.0.0",
