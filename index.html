@@ -181,6 +181,40 @@
     #toast.err { border-color: var(--err); color: var(--err); }
 
     input[type="file"] { display: none; }
+
+    /* ── File list (left) ──────────────────────── */
+    #panel-files {
+      position: absolute; top: 12px; left: 12px; bottom: 52px; width: 230px;
+      background: rgba(15,17,20,0.88); backdrop-filter: blur(12px);
+      border: 1px solid var(--border); border-radius: 8px;
+      display: none; flex-direction: column; overflow: hidden;
+      pointer-events: all;
+    }
+    body.has-list #panel-files { display: flex; }
+    body.has-list #panel-info  { left: 254px; }
+    .files-head {
+      padding: 9px 12px; border-bottom: 1px solid var(--border);
+      color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.6px;
+    }
+    #files-list { flex: 1; overflow-y: auto; padding: 4px; }
+    .file-item {
+      padding: 5px 8px; border-radius: 5px; cursor: pointer;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .file-item:hover  { background: var(--surface2); }
+    .file-item.active { background: rgba(95,143,255,0.16); color: var(--accent2); }
+    .file-item .dir   { color: var(--muted); }
+    .file-item .ext   { color: var(--muted); font-family: monospace; font-size: 10px; margin-left: 6px; }
+
+    /* Subfolder option (always reachable, even over the drop screen) */
+    #opt-sub {
+      position: fixed; bottom: 12px; left: 12px; z-index: 90;
+      display: flex; align-items: center; gap: 6px;
+      background: rgba(28,31,38,0.92); border: 1px solid var(--border);
+      border-radius: 6px; padding: 6px 10px; cursor: pointer; color: var(--muted);
+    }
+    #opt-sub:hover { color: var(--text); border-color: var(--border2); }
+    #opt-sub input { accent-color: var(--accent); cursor: pointer; }
   </style>
 </head>
 <body>
@@ -191,13 +225,13 @@
   <div class="drop-zone">
     <div class="drop-glyph">⬡</div>
     <div class="drop-title">GLB Viewer</div>
-    <div class="drop-sub">Drop a file here, or click to browse</div>
-    <div class="drop-badges"><span class="badge">.glb</span><span class="badge">.gltf</span></div>
+    <div class="drop-sub">Drop files or a folder here, or click to browse</div>
+    <div class="drop-badges"><span class="badge">.glb</span><span class="badge">.gltf</span><span class="badge">.fbx</span><span class="badge">.obj</span></div>
     <button class="btn btn-primary" id="btn-open-main" style="margin-top:10px">Open file…</button>
   </div>
 </div>
 
-<div id="drag-hint"><div class="drag-hint-label">Drop to open</div></div>
+<div id="drag-hint"><div class="drag-hint-label">Drop to replace current model</div></div>
 
 <div id="loading" class="hidden">
   <div class="spinner"></div>
@@ -207,6 +241,11 @@
 </div>
 
 <div id="ui">
+  <div id="panel-files">
+    <div class="files-head" id="files-head">Files</div>
+    <div id="files-list"></div>
+  </div>
+
   <div id="panel-info">
     <div class="panel-filename" id="info-filename">–</div>
     <div class="stat-grid" id="info-stats"></div>
@@ -244,9 +283,13 @@
   </div>
 </div>
 
+<label id="opt-sub" title="When a folder is dropped, also list models found in its subfolders">
+  <input type="checkbox" id="chk-sub"> Include subfolders
+</label>
+
 <div id="toast" class="hidden"></div>
 
-<input type="file" id="file-input" accept=".glb,.gltf">
+<input type="file" id="file-input" accept=".glb,.gltf,.fbx,.obj,.mtl,.bin,image/*" multiple>
 
 <script type="importmap">
 {
@@ -262,6 +305,9 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { GLTFLoader }    from 'three/addons/loaders/GLTFLoader.js';
 import { DRACOLoader }   from 'three/addons/loaders/DRACOLoader.js';
+import { FBXLoader }     from 'three/addons/loaders/FBXLoader.js';
+import { OBJLoader }     from 'three/addons/loaders/OBJLoader.js';
+import { MTLLoader }     from 'three/addons/loaders/MTLLoader.js';
 
 const isElectron = !!window.electronAPI;
 
@@ -325,8 +371,14 @@ let gridOn = true;
 const draco = new DRACOLoader();
 draco.setDecoderPath('https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/libs/draco/gltf/');
 
-const loader = new GLTFLoader();
-loader.setDRACOLoader(draco);
+// One manager for every loader: relative resource URLs (textures, .bin, .mtl)
+// are mapped onto the dropped files by resolveVfs().
+const manager = new THREE.LoadingManager();
+manager.setURLModifier(url => resolveVfs(url));
+
+const gltfLoader = new GLTFLoader(manager);
+gltfLoader.setDRACOLoader(draco);
+const fbxLoader = new FBXLoader(manager);
 
 // ── State ─────────────────────────────────────────────────────────────────────
 let model       = null;
@@ -339,50 +391,237 @@ let wireframe   = false;
 let litMode     = true;
 const clock     = new THREE.Clock();
 
-// ── File loading ──────────────────────────────────────────────────────────────
-function loadPath(filePath) {
-  const name = filePath.split('/').pop();
-  const url = 'localfile://' + (filePath.startsWith('/') ? filePath : '/' + filePath);
-  fetchGltf(url, name, null);
+// ── Virtual file set ──────────────────────────────────────────────────────────
+// Everything opened or dropped becomes an entry:
+//   { name, rel, depth, file, fsPath }
+//   rel    – path relative to what was dropped (forward slashes)
+//   depth  – folder levels below a dropped folder (0 = dropped file / direct child)
+//   file   – File object (web, and Electron drag & drop)
+//   fsPath – absolute path (Electron only); lets us look for textures on disk
+const MODEL_EXT = ['glb', 'gltf', 'fbx', 'obj'];
+const IMAGE_EXT = ['png', 'jpg', 'jpeg', 'webp', 'bmp', 'gif'];
+const VFS   = 'vfs://m/';
+const BLANK = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
+
+const extOf  = n => n.slice(n.lastIndexOf('.') + 1).toLowerCase();
+const dirOf  = p => p.includes('/') ? p.slice(0, p.lastIndexOf('/')) : '';
+const baseOf = p => p.slice(p.lastIndexOf('/') + 1);
+const stemOf = n => n.includes('.') ? n.slice(0, n.lastIndexOf('.')) : n;
+const fsURL  = p => 'localfile:///' + p.replace(/^\//, '').split('/').map(encodeURIComponent).join('/');
+
+function normPath(p) {
+  const out = [];
+  for (const seg of p.replace(/\\/g, '/').split('/')) {
+    if (!seg || seg === '.') continue;
+    if (seg === '..') out.pop(); else out.push(seg);
+  }
+  return out.join('/');
 }
 
-function loadFile(file) {
-  if (isElectron && file.path) {
-    loadPath(file.path);
-  } else {
-    const url = URL.createObjectURL(file);
-    fetchGltf(url, file.name, () => URL.revokeObjectURL(url));
+function makeEntry({ name, rel, depth = 0, file = null, fsPath = null }) {
+  if (!fsPath && isElectron && file?.path) fsPath = file.path.replace(/\\/g, '/');
+  return { name, rel: normPath(rel || name), depth, file, fsPath, url: null };
+}
+
+let fileSet = { all: [], byPath: new Map(), byBase: new Map() };
+let listed  = [];      // model entries shown in the list
+let current = null;    // entry being viewed
+let missing = new Set();
+let loadToken = 0;
+
+function commitSet(all) {
+  for (const e of fileSet.all) if (e.url) URL.revokeObjectURL(e.url);
+  const byPath = new Map(), byBase = new Map();
+  for (const e of all) {
+    byPath.set(e.rel.toLowerCase(), e);
+    const k = e.name.toLowerCase();
+    if (!byBase.has(k)) byBase.set(k, []);
+    byBase.get(k).push(e);
+  }
+  fileSet = { all, byPath, byBase };
+}
+
+function entryURL(e) {
+  if (e.file) return e.url ??= URL.createObjectURL(e.file);
+  return fsURL(e.fsPath);
+}
+
+function modelsOf(all, includeSub) {
+  return all
+    .filter(e => MODEL_EXT.includes(extOf(e.name)) && (e.depth === 0 || includeSub))
+    .sort((a, b) => a.rel.localeCompare(b.rel, undefined, { numeric: true, sensitivity: 'base' }));
+}
+
+// Maps vfs://m/<path> URLs (produced by the loaders) to a blob/localfile URL.
+function resolveVfs(url) {
+  if (!url.startsWith(VFS)) return url;
+  let rel = url.slice(VFS.length);
+  try { rel = decodeURIComponent(rel); } catch {}
+  rel = normPath(rel);
+
+  let hit = fileSet.byPath.get(rel.toLowerCase());
+  if (!hit) {
+    // Fall back to matching by file name, preferring the model's own folder
+    const cands = fileSet.byBase.get(baseOf(rel).toLowerCase()) || [];
+    const mdir  = current ? dirOf(current.rel) : '';
+    hit = cands.find(c => dirOf(c.rel) === mdir) || cands[0];
+  }
+  if (hit) return entryURL(hit);
+
+  // Electron: look beside the model on disk
+  if (current?.fsPath) {
+    const mdir = dirOf(current.rel);
+    let sub = rel;
+    if (/^[A-Za-z]:\//.test(sub)) sub = baseOf(sub);
+    else if (mdir && sub.toLowerCase().startsWith(mdir.toLowerCase() + '/')) sub = sub.slice(mdir.length + 1);
+    return fsURL(dirOf(current.fsPath) + '/' + sub);
+  }
+
+  missing.add(baseOf(rel));
+  return BLANK;
+}
+
+async function readEntry(e, as = 'buffer') {
+  if (e.file) return as === 'text' ? e.file.text() : e.file.arrayBuffer();
+  const r = await fetch(entryURL(e));
+  if (!r.ok) throw new Error('Cannot read ' + e.name);
+  return as === 'text' ? r.text() : r.arrayBuffer();
+}
+
+function findSibling(e, name) {
+  const rel = normPath(dirOf(e.rel) + '/' + name);
+  return fileSet.byPath.get(rel.toLowerCase())
+      || (fileSet.byBase.get(baseOf(normPath(name)).toLowerCase()) || [])[0];
+}
+
+async function parseEntry(e) {
+  const dir  = dirOf(e.rel);
+  const base = VFS + (dir ? dir + '/' : '');
+  const ext  = extOf(e.name);
+
+  if (ext === 'glb' || ext === 'gltf') {
+    const buf = await readEntry(e);
+    return new Promise((res, rej) => gltfLoader.parse(buf, base, res, rej));
+  }
+  if (ext === 'fbx') {
+    return fbxLoader.parse(await readEntry(e), base);
+  }
+
+  // OBJ, with its MTL if there is one
+  const text      = await readEntry(e, 'text');
+  const objLoader = new OBJLoader(manager);
+  const mtlName   = text.match(/^\s*mtllib\s+(.+?)\s*$/m)?.[1];
+  const mtl       = mtlName && findSibling(e, mtlName.replace(/\\/g, '/'));
+  if (mtl) {
+    const mdir = dirOf(mtl.rel);
+    const mats = new MTLLoader(manager).parse(await readEntry(mtl, 'text'), VFS + (mdir ? mdir + '/' : ''));
+    mats.preload();
+    objLoader.setMaterials(mats);
+  }
+  const group = objLoader.parse(text);
+  if (!mtl) {
+    // No material file: use an image named like the model, if there is one
+    const img = fileSet.all.find(f => dirOf(f.rel) === dir && stemOf(f.name) === stemOf(e.name)
+                                      && IMAGE_EXT.includes(extOf(f.name)));
+    if (img) {
+      const tex = new THREE.TextureLoader(manager).load(base + baseOf(img.rel));
+      tex.colorSpace = THREE.SRGBColorSpace;
+      group.traverse(o => {
+        if (o.isMesh) [].concat(o.material).forEach(m => { m.map = tex; m.needsUpdate = true; });
+      });
+    }
+  }
+  return group;
+}
+
+async function openEntry(e) {
+  const token = ++loadToken;
+  current = e;
+  missing = new Set();
+  markActive();
+  showLoading(true, e.name, 0);
+  try {
+    const result = await parseEntry(e);
+    if (token === loadToken) onLoaded(result, e.name);
+  } catch (err) {
+    if (token !== loadToken) return;
+    showLoading(false);
+    toast('Failed to load: ' + (err.message || err), 'err');
   }
 }
 
-function fetchGltf(url, name, cleanup) {
-  showLoading(true, '–', 0);
-
-  loader.load(
-    url,
-    (gltf) => { cleanup?.(); onLoaded(gltf, name); },
-    (prog) => {
-      if (prog.total > 0) {
-        const pct = Math.round(prog.loaded / prog.total * 100);
-        document.getElementById('load-label').textContent = pct + '%';
-        document.getElementById('load-bar').style.width  = pct + '%';
-      }
-    },
-    (err) => {
-      cleanup?.();
-      showLoading(false);
-      toast('Failed to load: ' + (err.message || err), 'err');
-    }
-  );
+// Replace the viewer contents with a new set of entries.
+function openSet(all) {
+  if (!modelsOf(all, subChk.checked).length) {
+    toast(modelsOf(all, true).length
+      ? 'Models are in subfolders — enable "Include subfolders"'
+      : 'No supported model files (glb, gltf, fbx, obj)', 'err');
+    return;
+  }
+  commitSet(all);
+  refreshList();
+  openEntry(listed[0]);
 }
 
+// ── File list ─────────────────────────────────────────────────────────────────
+const subChk = document.getElementById('chk-sub');
+try { subChk.checked = localStorage.getItem('includeSubfolders') === '1'; } catch {}
+
+function refreshList() {
+  listed = modelsOf(fileSet.all, subChk.checked);
+  document.getElementById('files-list').replaceChildren(...listed.map(e => {
+    const row = document.createElement('div');
+    row.className = 'file-item';
+    row.title = e.rel;
+    // show the sub-path below the dropped folder only (not the folder itself)
+    const dir = e.depth ? dirOf(e.rel).split('/').slice(-e.depth).join('/') : '';
+    if (dir) {
+      const d = document.createElement('span');
+      d.className = 'dir'; d.textContent = dir + '/';
+      row.append(d);
+    }
+    row.append(stemOf(e.name));
+    const x = document.createElement('span');
+    x.className = 'ext'; x.textContent = extOf(e.name);
+    row.append(x);
+    row.addEventListener('click', () => { if (e !== current) openEntry(e); });
+    row._entry = e;
+    return row;
+  }));
+  document.getElementById('files-head').textContent = listed.length + ' models';
+  document.body.classList.toggle('has-list', listed.length > 1);
+  markActive();
+}
+
+function markActive() {
+  for (const row of document.getElementById('files-list').children) {
+    const on = row._entry === current;
+    row.classList.toggle('active', on);
+    if (on) row.scrollIntoView({ block: 'nearest' });
+  }
+}
+
+function stepList(d) {
+  if (listed.length < 2) return;
+  const i = listed.indexOf(current);
+  openEntry(listed[(i + d + listed.length) % listed.length]);
+}
+
+subChk.addEventListener('change', () => {
+  try { localStorage.setItem('includeSubfolders', subChk.checked ? '1' : '0'); } catch {}
+  subChk.blur();
+  if (!fileSet.all.length) return;
+  refreshList();
+  if (!listed.includes(current) && listed.length) openEntry(listed[0]);
+});
+
 // ── Model mounted ─────────────────────────────────────────────────────────────
-function onLoaded(gltf, filename) {
+function onLoaded(result, filename) {
   if (model)  { scene.remove(model); disposeObj(model); }
   if (mixer)  { mixer.stopAllAction(); mixer = null; }
   action = null; animations = [];
 
-  const obj = gltf.scene;
+  const obj = result.scene || result;   // GLTF → {scene}; FBX/OBJ → the group itself
 
   const box  = new THREE.Box3().setFromObject(obj);
   const size = box.getSize(new THREE.Vector3());
@@ -412,7 +651,7 @@ function onLoaded(gltf, filename) {
 
   fitCamera(box2);
 
-  animations = gltf.animations || [];
+  animations = result.animations || [];
   setupAnims(animations);
   showStats(filename, stats(obj), animations.length);
 
@@ -421,7 +660,8 @@ function onLoaded(gltf, filename) {
   document.getElementById('panel-hints').style.display = '';
 
   if (isElectron) window.electronAPI.setTitle(filename + ' — GLB Viewer');
-  toast('Loaded ' + filename, 'ok');
+  if (missing.size) toast(`Loaded ${filename} — textures not found: ${[...missing].join(', ')}`, 'err');
+  else              toast('Loaded ' + filename, 'ok');
 }
 
 // ── Camera fit ────────────────────────────────────────────────────────────────
@@ -565,7 +805,9 @@ window.addEventListener('resize', resize);
 
 // ── IPC: main process asks renderer to open a file ────────────────────────────
 if (isElectron) {
-  window.electronAPI.onOpenFile((filePath) => loadPath(filePath));
+  window.electronAPI.onOpenFile((paths) => {
+    openSet([].concat(paths).map(p => makeEntry({ name: baseOf(p), rel: baseOf(p), fsPath: p })));
+  });
 }
 
 // ── Open button ───────────────────────────────────────────────────────────────
@@ -581,8 +823,9 @@ document.getElementById('btn-open').addEventListener('click', triggerOpen);
 
 const fileInput = document.getElementById('file-input');
 fileInput.addEventListener('change', e => {
-  if (e.target.files[0]) loadFile(e.target.files[0]);
+  const files = [...e.target.files];
   e.target.value = '';
+  if (files.length) openSet(files.map(file => makeEntry({ name: file.name, rel: file.name, file })));
 });
 
 // ── Drag & drop ───────────────────────────────────────────────────────────────
@@ -590,7 +833,47 @@ let dragDepth = 0;
 const dragHint    = document.getElementById('drag-hint');
 const dropOverlay = document.getElementById('drop-overlay');
 
+const hasFiles = e => [...(e.dataTransfer?.types || [])].includes('Files');
+
+// Walk a dropped FileSystemEntry. Everything below a dropped folder is indexed
+// (so textures in e.g. "Textures/" resolve); `depth` decides what gets listed.
+const readDir = reader => new Promise((res, rej) => {
+  const all = [];
+  (function next() {
+    reader.readEntries(batch => batch.length ? (all.push(...batch), next()) : res(all), rej);
+  })();
+});
+
+async function walk(fsEntry, depth, out) {
+  if (fsEntry.isFile) {
+    const file = await new Promise((res, rej) => fsEntry.file(res, rej));
+    out.push(makeEntry({ name: file.name, rel: fsEntry.fullPath, depth, file }));
+  } else if (fsEntry.isDirectory) {
+    for (const child of await readDir(fsEntry.createReader()))
+      await walk(child, child.isDirectory ? depth + 1 : depth, out);
+  }
+}
+
+async function ingestDrop(fsEntries, files) {
+  showLoading(true, 'Reading files…', 0);
+  try {
+    const out = [];
+    if (fsEntries.length) {
+      // a dropped folder's direct files are depth 0, so start its children at 0
+      for (const en of fsEntries) await walk(en, 0, out);
+    } else {
+      files.forEach(file => out.push(makeEntry({ name: file.name, rel: file.webkitRelativePath || file.name, file })));
+    }
+    showLoading(false);
+    openSet(out);
+  } catch (err) {
+    showLoading(false);
+    toast('Could not read drop: ' + (err.message || err), 'err');
+  }
+}
+
 document.addEventListener('dragenter', e => {
+  if (!hasFiles(e)) return;
   e.preventDefault(); dragDepth++;
   if (model) dragHint.classList.add('visible');
   else       dropOverlay.classList.add('dragover');
@@ -608,8 +891,13 @@ document.addEventListener('drop', e => {
   dragDepth = 0;
   dragHint.classList.remove('visible');
   dropOverlay.classList.remove('dragover');
-  const f = e.dataTransfer.files[0];
-  if (f) loadFile(f);
+  // Entries must be grabbed synchronously; the DataTransfer is cleared after this handler
+  const fsEntries = [...e.dataTransfer.items]
+    .filter(i => i.kind === 'file')
+    .map(i => i.webkitGetAsEntry?.())
+    .filter(Boolean);
+  const files = [...e.dataTransfer.files];
+  if (fsEntries.length || files.length) ingestDrop(fsEntries, files);
 });
 
 // ── Toolbar ───────────────────────────────────────────────────────────────────
@@ -669,6 +957,8 @@ document.addEventListener('keydown', e => {
       applyLighting(litMode); break;
     case ' ': e.preventDefault(); togglePlay(); break;
     case 'o': triggerOpen(); break;
+    case 'arrowdown': case 'pagedown': e.preventDefault(); stepList(1);  break;
+    case 'arrowup':   case 'pageup':   e.preventDefault(); stepList(-1); break;
   }
 });
 

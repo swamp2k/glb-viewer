@@ -1,7 +1,7 @@
 {
   "name": "glb-viewer",
   "version": "1.0.0",
-  "description": "GLB / GLTF 3D model viewer",
+  "description": "GLB / GLTF / FBX / OBJ 3D model viewer",
   "author": "Martin Jeppesen <67677982+swamp2k@users.noreply.github.com>",
   "license": "MIT",
   "main": "electron.cjs",
@@ -37,6 +37,18 @@
         "ext":         "gltf",
         "name":        "GLTF 3D Model",
         "description": "GL Transmission Format",
+        "role":        "Viewer"
+      },
+      {
+        "ext":         "fbx",
+        "name":        "FBX 3D Model",
+        "description": "Autodesk FBX",
+        "role":        "Viewer"
+      },
+      {
+        "ext":         "obj",
+        "name":        "OBJ 3D Model",
+        "description": "Wavefront OBJ",
         "role":        "Viewer"
       }
     ],

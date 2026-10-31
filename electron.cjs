@@ -1,6 +1,7 @@
 'use strict';
 
 const { app, BrowserWindow, dialog, ipcMain, Menu, protocol, net } = require('electron');
+const fs = require('fs');
 const path = require('path');
 const { pathToFileURL } = require('url');
 
@@ -9,6 +10,13 @@ const { pathToFileURL } = require('url');
 // and opens the file there, rather than launching a second process.
 const isPrimary = app.requestSingleInstanceLock();
 if (!isPrimary) { app.quit(); process.exit(0); }
+
+// Let the renderer fetch() localfile:// URLs (models and sibling textures)
+protocol.registerSchemesAsPrivileged([
+  { scheme: 'localfile', privileges: { supportFetchAPI: true, corsEnabled: true, bypassCSP: true } },
+]);
+
+const MODEL_EXTS = ['glb', 'gltf', 'fbx', 'obj'];
 
 let win = null;
 let pendingFile = extractGlbArg(process.argv); // from CLI / file association
@@ -34,7 +42,7 @@ app.whenReady().then(() => {
     let p = decodeURIComponent(request.url.replace(/^localfile:\/\//, ''));
     // On Windows the path arrives as /C:/foo.glb — strip the leading slash
     if (process.platform === 'win32' && /^\/[A-Za-z]:/.test(p)) p = p.slice(1);
-    return net.fetch(pathToFileURL(p).href);
+    return net.fetch(pathToFileURL(findFile(p)).href);
   });
 
   win = createWindow();
@@ -104,6 +112,22 @@ function buildMenu(w) {
   ]);
 }
 
+// FBX files usually reference textures by bare name ("colormap.png") even when
+// they sit in a sub-folder such as Textures/. If the path doesn't exist, look
+// one level down in the same folder.
+function findFile(p) {
+  if (fs.existsSync(p)) return p;
+  const dir = path.dirname(p), base = path.basename(p).toLowerCase();
+  try {
+    for (const d of fs.readdirSync(dir, { withFileTypes: true })) {
+      if (!d.isDirectory()) continue;
+      const hit = fs.readdirSync(path.join(dir, d.name)).find((f) => f.toLowerCase() === base);
+      if (hit) return path.join(dir, d.name, hit);
+    }
+  } catch { /* fall through */ }
+  return p;
+}
+
 // ── IPC ───────────────────────────────────────────────────────────────────────
 ipcMain.handle('open-dialog', (e) =>
   openDialog(BrowserWindow.fromWebContents(e.sender))
@@ -119,24 +143,25 @@ async function openDialog(w) {
   const { canceled, filePaths } = await dialog.showOpenDialog(w, {
     title: 'Open 3D Model',
     filters: [
-      { name: '3D Models', extensions: ['glb', 'gltf'] },
+      { name: '3D Models', extensions: MODEL_EXTS },
       { name: 'All Files', extensions: ['*'] },
     ],
-    properties: ['openFile'],
+    properties: ['openFile', 'multiSelections'],
   });
-  if (!canceled && filePaths[0]) sendFile(filePaths[0]);
+  if (!canceled && filePaths.length) sendFiles(filePaths);
 }
 
-function sendFile(filePath) {
+function sendFile(filePath) { sendFiles([filePath]); }
+
+function sendFiles(filePaths) {
   if (!win) return;
   // Normalise to forward slashes for the renderer
-  const norm = filePath.replace(/\\/g, '/');
-  win.webContents.send('open-file', norm);
-  win.setTitle(path.basename(filePath) + ' — GLB Viewer');
+  win.webContents.send('open-file', filePaths.map((p) => p.replace(/\\/g, '/')));
+  win.setTitle(path.basename(filePaths[0]) + ' — GLB Viewer');
 }
 
 function extractGlbArg(argv) {
   return (argv || [])
     .slice(app.isPackaged ? 1 : 2)
-    .find((a) => /\.(glb|gltf)$/i.test(a)) || null;
+    .find((a) => /\.(glb|gltf|fbx|obj)$/i.test(a)) || null;
 }
